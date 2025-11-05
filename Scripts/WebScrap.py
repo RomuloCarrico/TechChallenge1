@@ -1,157 +1,106 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service as ChromeService
-from webdriver_manager.chrome import ChromeDriverManager
-from urllib.parse import urljoin
-import csv
-import time
+# Arquivo: Script/webscrap.py
+
+import requests
+from bs4 import BeautifulSoup
 import os
+import csv
+import glob
+import time
+from urllib.parse import urljoin
+from datetime import datetime
 
-# --- Configurações e Variáveis Globais ---
-URL_BASE = "https://books.toscrape.com/"
-URL_PAGINA_BASE = "https://books.toscrape.com/catalogue/page-{}.html"
-TOTAL_PAGINAS = 50 
-CABECALHO = ["Título", "Preço(£)", "Rating", "Disponibilidade", "Categoria", "URL da Imagem"]
-DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Data')
-NOME_ARQUIVO_CSV = os.path.join(DATA, "Livros.csv")
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+FINAL_CSV = os.path.join(DATA_DIR, "Livros.csv")
 
-# Função para criar pasta /Data
-def criar_pasta_data(caminho):
-    """Cria a pasta recursivamente se ela não existir."""
-    if not os.path.exists(caminho):
-        os.makedirs(caminho)
-        print(f"Pasta criada: {caminho}")
+def checkCacheFile() -> bool:
+    """Verifica se existe CSV recente e reutiliza como cache."""
+    CACHE_MINUTES = 5
+    files = glob.glob(os.path.join(DATA_DIR, "books_*.csv"))
 
-# Função para converter o rating por extenso para integer
-def rating_para_int(nota):
-    """Converte a classe CSS de rating (e.g., 'star-rating Three') para um número."""
-    notas_map = {
-        'One': 1, 'Two': 2, 'Three': 3, 'Four': 4, 'Five': 5,
-    }
-    nota_por_extenso = nota.split()[-1]
-    return notas_map.get(nota_por_extenso, 0)
+    if files:
+        latestFile = max(files, key=os.path.getctime)
+        lastModified = os.path.getmtime(latestFile)
+        if time.time() - lastModified < CACHE_MINUTES * 60:
+            print(f"Usando cache local: {latestFile}")
+            if not os.path.exists(FINAL_CSV):
+                os.rename(latestFile, FINAL_CSV)
+                print(f"Cache salvo como: {FINAL_CSV}")
+            return True
+    return False
 
-# Função para limpar os dados de preço, e salvar em Float
-def limpar_e_converter_preco(preco_string):
-    """Remove o símbolo de libra (£) e converte a string para float."""
-    # Remove o símbolo de libra ('£') e quaisquer outros caracteres não numéricos ou ponto
-    preco_limpo = preco_string.replace('£', '').strip()
-    
-    try:
-        # Converte a string limpa para float
-        return float(preco_limpo)
-    except ValueError:
-        print(f"[ERRO DE CONVERSÃO] Não foi possível converter '{preco_string}' para float.")
-        return 0.0 # Retorna 0.0 ou outro valor padrão em caso de erro
 
-# Listas para armazenar dados
-dados_a_coletar = [] 
-dados_finais_csv = [] 
-driver = None
+def runScraping():
+    """Executa o scraping e salva o CSV limpo (Livros.csv)."""
+    os.makedirs(DATA_DIR, exist_ok=True)
 
-try:
-    # Criação da pasta /Data para salvar o CSV, caso não tenha pasta
-    criar_pasta_data(DATA)
+    if os.path.exists(FINAL_CSV):
+        print(f"Arquivo já existe: {FINAL_CSV}")
+        return
 
-    # --- Configuração do WebDriver ---
-    print("Iniciando o Chrome WebDriver...")
-    driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
-    driver.implicitly_wait(5)
-    
-    # --- Extração dos Dados das 50 Páginas do Catálogo ---
-    print("\n--- Extraindo dados de todas as 50 páginas de catálogo ---")
-    
-    for pagina in range(1, TOTAL_PAGINAS + 1):
-        url_catalogo = URL_PAGINA_BASE.format(pagina)
-        if pagina == 1:
-            url_catalogo = URL_BASE 
+    if checkCacheFile():
+        print("Cache válido encontrado. Nenhum scraping necessário.")
+        return
 
-        print(f"Acessando Página {pagina}/{TOTAL_PAGINAS}: {url_catalogo}")
-        driver.get(url_catalogo)
-        
-        livros = driver.find_elements(By.CSS_SELECTOR, 'li.col-xs-6.col-sm-4.col-md-3.col-lg-3')
-        
-        for livro in livros:
-            try:
-                # Título e URL de Detalhes
-                titulo_link = livro.find_element(By.TAG_NAME, 'h3').find_element(By.TAG_NAME, 'a')
-                titulo = titulo_link.get_attribute('title')
-                url_detalhes_relativa = titulo_link.get_attribute('href')
-                url_detalhes_absoluta = urljoin(URL_BASE, url_detalhes_relativa)
-                
-                # Preço
-                preco_str = livro.find_element(By.CLASS_NAME, 'price_color').text
-                preco = limpar_e_converter_preco(preco_str)
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    tempFile = os.path.join(DATA_DIR, f"books_{timestamp}.csv")
 
-                # Rating
-                rating_classe = livro.find_element(By.CSS_SELECTOR, 'p[class^="star-rating"]').get_attribute('class')
-                rating = rating_para_int(rating_classe)
-                
-                # Disponibilidade
-                disponibilidade = livro.find_element(By.CLASS_NAME, 'availability').text.strip()
-                
-                # URL da Imagem
-                img_src_relativa = livro.find_element(By.TAG_NAME, 'img').get_attribute('src')
-                url_imagem = urljoin(URL_BASE, img_src_relativa)
+    print(f"Criando novo arquivo: {tempFile}")
 
-                dados_a_coletar.append({
-                    "titulo": titulo,
-                    "preco": preco,
-                    "rating": rating,
-                    "disponibilidade": disponibilidade,
-                    "url_detalhes": url_detalhes_absoluta,
-                    "url_imagem": url_imagem,
-                })
+    BASE_URL = "https://books.toscrape.com/catalogue/page-{}.html"
+    BASE_BASE = "https://books.toscrape.com/"
+    NUM_PAGES = 50
 
-            except Exception as e:
-                print(f"  [AVISO] Erro ao extrair dados iniciais de um livro, pulando: {e}")
+    # Dicionário para converter rating textual em número
+    rating_map = {"One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5}
+
+    with open(tempFile, mode="w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Título", "Preço(£)", "Rating", "Disponibilidade", "Categoria", "URL da Imagem"])
+
+        for page in range(1, NUM_PAGES + 1):
+            print(f"Lendo página {page}")
+            url = BASE_URL.format(page)
+            response = requests.get(url)
+            response.encoding = "utf-8"
+
+            if response.status_code != 200:
+                print(f"Erro ao acessar página {page}")
                 continue
 
-    print(f"\nTotal de livros encontrados nas 50 páginas: {len(dados_a_coletar)}")
-    
-    # --- Extração da Categoria  ---
-    print("\n--- Extraindo Categoria por navegação (1 por 1) ---")
-    
-    for i, dado in enumerate(dados_a_coletar):
-        print(f"  > Scraping {i+1}/{len(dados_a_coletar)}: {dado['titulo'][:40]}...")
-        
-        driver.get(dado['url_detalhes'])
-        time.sleep(0.1) 
-        
-        categoria = "N/A"
-        try:
-            categoria_elemento = driver.find_element(By.CSS_SELECTOR, 'ul.breadcrumb li:nth-last-child(2) a')
-            categoria = categoria_elemento.text
-            
-        except Exception:
-            pass # Falha silenciosamente se a categoria não for encontrada
-        
-        dados_finais_csv.append([
-            dado['titulo'],
-            dado['preco'],
-            dado['rating'],
-            dado['disponibilidade'],
-            categoria,
-            dado['url_imagem']
-        ])
-    
-    # --- Salvando no Arquivo CSV ---
-    
-    print("\n--- Salvando dos dados no arquivo CSV ---")
-    
-    with open(NOME_ARQUIVO_CSV, 'w', newline='', encoding='utf-8') as arquivo_csv:
-        escritor = csv.writer(arquivo_csv)
-        
-        escritor.writerow(CABECALHO)
-        escritor.writerows(dados_finais_csv)
+            soup = BeautifulSoup(response.text, "html.parser")
+            books = soup.find_all("article", class_="product_pod")
 
-    print("\n✅ Web scraping concluído com sucesso!")
-    print(f"✅ {len(dados_finais_csv)} registros salvos em '{NOME_ARQUIVO_CSV}'.")
+            for book in books:
+                title = book.h3.a["title"]
 
-except Exception as e:
-    print(f"\n❌ Ocorreu um erro geral durante a execução: {e}")
+                # Preço -> float
+                price_text = book.find("p", class_="price_color").text.strip()
+                price = float(price_text.replace("£", ""))
 
-finally:
-    if driver:
-        print("Fechando o navegador.")
-        driver.quit()
+                # Rating -> número
+                rating_class = book.p["class"][1]
+                rating = rating_map.get(rating_class, 0)
+
+                stock = book.find("p", class_="instock availability").text.strip()
+
+                # Corrige URL da imagem
+                image_src = book.find("img")["src"].replace("../../", "")
+                image_url = urljoin(BASE_BASE, image_src)
+
+                # Descobre categoria
+                href = book.h3.a["href"]
+                detail_url = urljoin(url, href)
+                detail_resp = requests.get(detail_url)
+                detail_resp.raise_for_status()
+                detail_soup = BeautifulSoup(detail_resp.text, "html.parser")
+                category = detail_soup.find("ul", class_="breadcrumb").find_all("a")[2].text.strip()
+
+                writer.writerow([title, price, rating, stock, category, image_url])
+
+    os.rename(tempFile, FINAL_CSV)
+    print(f"✅ Arquivo salvo como: {FINAL_CSV}")
+    print("Script finalizado com sucesso.")
+
+
+if __name__ == "__main__":
+    runScraping()
