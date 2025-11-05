@@ -1,7 +1,7 @@
 import pandas as pd
 from typing import List, Dict, Any
 
-DATA_PATH = "Data/livros.csv"
+DATA_PATH = "Data/Livros.csv"
 
 def load_data() -> List[Dict[str, Any]]:
     """
